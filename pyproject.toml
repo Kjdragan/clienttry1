@@ -1,0 +1,15 @@
+[project]
+name = "clienttry1"
+version = "0.1.0"
+description = "Dynamic MCP client implementation with LLM orchestration"
+requires-python = ">= 3.9"
+
+[project.dependencies]
+httpx = "^0.25.0"
+anthropic = "^0.7.4"
+uv = "^0.1.7"
+mcp = "1.2.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
