@@ -91,3 +91,169 @@ Return the plan as JSON with:
             return {
                 "error": "No response content available"
             }
+            
+        except Exception as e:
+            logger.error(f"Research planning failed: {e}")
+            raise
+
+    async def execute_research_plan(self, plan: Dict[str, Any], mcp_client: Any) -> Dict[str, Any]:
+        """Execute a research plan using available capabilities."""
+        results = {
+            'steps': [],
+            'data': [],
+            'metadata': {
+                'start_time': datetime.now().isoformat(),
+                'success_count': 0,
+                'failure_count': 0
+            }
+        }
+        
+        try:
+            for step in plan.get('steps', []):
+                step_result = {
+                    'step': step,
+                    'status': 'pending',
+                    'start_time': datetime.now().isoformat()
+                }
+                
+                try:
+                    if step['type'] == 'tool':
+                        result = await mcp_client.execute_tool(
+                            step['name'],
+                            step['parameters']
+                        )
+                        step_result['data'] = result
+                        
+                    elif step['type'] == 'resource':
+                        result = await mcp_client.read_resource(
+                            step['uri']
+                        )
+                        step_result['data'] = result
+                        
+                    elif step['type'] == 'prompt':
+                        result = await mcp_client.get_prompt(
+                            step['name'],
+                            step['arguments']
+                        )
+                        step_result['data'] = result
+                        
+                    step_result['status'] = 'completed'
+                    step_result['end_time'] = datetime.now().isoformat()
+                    results['metadata']['success_count'] += 1
+                    
+                except Exception as e:
+                    step_result['status'] = 'failed'
+                    step_result['error'] = str(e)
+                    step_result['end_time'] = datetime.now().isoformat()
+                    results['metadata']['failure_count'] += 1
+                    
+                    # Try fallback if available
+                    if step.get('fallback'):
+                        try:
+                            fallback_result = await self.execute_fallback(
+                                step['fallback'],
+                                mcp_client
+                            )
+                            step_result['fallback_data'] = fallback_result
+                            step_result['status'] = 'completed_with_fallback'
+                        except Exception as fallback_e:
+                            step_result['fallback_error'] = str(fallback_e)
+                
+                results['steps'].append(step_result)
+                if step_result.get('data'):
+                    results['data'].append(step_result['data'])
+                
+            results['metadata']['end_time'] = datetime.now().isoformat()
+            return results
+            
+        except Exception as e:
+            logger.error(f"Research execution failed: {e}")
+            raise
+
+    async def analyze_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze research results."""
+        try:
+            response = await self.client.messages.create(
+                model="claude-3-opus-20240229",
+                max_tokens=2000,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Analyze these research results:
+
+Results:
+{json.dumps(results, indent=2)}
+
+Provide:
+1. Key findings and insights
+2. Success/failure analysis
+3. Data quality assessment
+4. Suggestions for improvement
+5. Additional research needs
+
+Format as JSON with:
+- findings: Array of key findings
+- quality: Data quality assessment
+- gaps: Information gaps identified
+- recommendations: Suggested next steps"""
+                }]
+            )
+            
+            # Parse JSON from the response text
+            if response.content and len(response.content) > 0:
+                try:
+                    return json.loads(response.content[0].text)
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse JSON from response")
+                    return {
+                        "error": "Invalid JSON response",
+                        "raw_response": response.content[0].text
+                    }
+            return {
+                "error": "No response content available"
+            }
+            
+        except Exception as e:
+            logger.error(f"Results analysis failed: {e}")
+            raise
+
+    async def execute_fallback(self, fallback: Dict[str, Any], mcp_client: Any) -> Dict[str, Any]:
+        """Execute fallback plan for failed steps."""
+        try:
+            if fallback['type'] == 'tool':
+                return await mcp_client.execute_tool(
+                    fallback['name'],
+                    fallback['parameters']
+                )
+            elif fallback['type'] == 'resource':
+                return await mcp_client.read_resource(
+                    fallback['uri']
+                )
+            elif fallback['type'] == 'prompt':
+                return await mcp_client.get_prompt(
+                    fallback['name'],
+                    fallback['arguments']
+                )
+            else:
+                raise ValueError(f"Unknown fallback type: {fallback['type']}")
+                
+        except Exception as e:
+            logger.error(f"Fallback execution failed: {e}")
+            raise
+
+    def get_session_summary(self) -> Dict[str, Any]:
+        """Get summary of current research session."""
+        return {
+            'query_count': len(self.current_session),
+            'successful_queries': sum(
+                1 for q in self.current_session.values()
+                if q.get('status') == 'completed'
+            ),
+            'failed_queries': sum(
+                1 for q in self.current_session.values()
+                if q.get('status') == 'failed'
+            ),
+            'latest_query': max(
+                (q.get('timestamp') for q in self.current_session.values()),
+                default=None
+            )
+        }
